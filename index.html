@@ -3313,7 +3313,18 @@ function init() {
   camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
   controls = new OrbitControls(camera, renderer.domElement);
   controls.screenSpacePanning = true;
+  controls.enableZoom = false; // 改用下方的平滑滾輪縮放
+  controls.enableDamping = true; controls.dampingFactor = 0.12; // 旋轉、平移帶慣性
   controls.addEventListener('change', () => { keepOutside(); render(); });
+  controls.addEventListener('start', animate);
+  renderer.domElement.addEventListener('wheel', e => {
+    e.preventDefault();
+    let dy = e.deltaY; if (e.deltaMode === 1) dy *= 16; else if (e.deltaMode === 2) dy *= 400;
+    dy = Math.max(-300, Math.min(300, dy)); // 單次事件的變化上限，避免跳動
+    const cur = camera.position.distanceTo(controls.target);
+    zoomGoal = Math.max(controls.minDistance || 0.01, Math.min(controls.maxDistance || 1e3, (zoomGoal ?? cur) * Math.exp(dy * 0.0008)));
+    animate();
+  }, { passive: false });
   renderer.domElement.addEventListener('dblclick', () => view('oblique')); // 雙擊回到鳥瞰
   scene.add(new THREE.AmbientLight(0xffffff, 1.6));
   const dl = new THREE.DirectionalLight(0xffffff, 1.4); dl.position.set(-2, 4, 3); scene.add(dl);
@@ -3327,6 +3338,26 @@ function resize() {
   camera.aspect = w / h; camera.updateProjectionMatrix(); render();
 }
 function render() { if (renderer) renderer.render(scene, camera); }
+let zoomGoal = null, animating = false;
+function animate() { // 平滑縮放與慣性：有變化時逐格更新，停下後結束
+  if (animating) return; animating = true;
+  const tick = () => {
+    let moving = false;
+    if (zoomGoal != null) {
+      const tg = controls.target, dir = camera.position.clone().sub(tg), d = dir.length();
+      let nd = d + (zoomGoal - d) * 0.16;
+      if (Math.abs(nd - zoomGoal) < zoomGoal * 0.002) nd = zoomGoal;
+      camera.position.copy(tg).add(dir.normalize().multiplyScalar(nd));
+      keepOutside();
+      const after = camera.position.distanceTo(tg);
+      if (nd === zoomGoal || Math.abs(after - nd) > nd * 0.01) zoomGoal = null; else moving = true; // 到達或被地塊擋住就停
+    }
+    if (controls.update()) moving = true;
+    render();
+    if (moving) requestAnimationFrame(tick); else animating = false;
+  };
+  requestAnimationFrame(tick);
+}
 let blk = null; // 目前地塊範圍（m），用來防止相機進入地塊內部
 function insideBlock(p) {
   if (!blk || !ctxRef) return false;
@@ -3608,7 +3639,7 @@ function view(name) {
     document.getElementById('g3dStatus').textContent = t('沿樞紐線 {0}°/{1}° 往下看（down-plunge view），垂直誇張已設為 1。', String(Math.round(Math.atan2(a[0], a[1]) * 180 / Math.PI + 360) % 360).padStart(3, '0'), Math.round(Math.asin(-a[2]) * 180 / Math.PI));
   } else dir = new THREE.Vector3(-0.9, 0.85, 1.1);
   camera.position.copy(tgt.clone().add(dir.normalize().multiplyScalar(d)));
-  controls.target.copy(tgt); controls.update(); keepOutside(); render();
+  zoomGoal = null; controls.target.copy(tgt); controls.update(); keepOutside(); render();
 }
 function setVE(v) { if (root) { root.scale.y = v; document.getElementById('g3veVal').textContent = '×' + v; if (ctxRef) buildLabels(ctxRef.st.C); keepOutside(); render(); } }
 function snapshot() { render(); return renderer.domElement.toDataURL('image/png'); }

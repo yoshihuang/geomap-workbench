@@ -3385,8 +3385,21 @@ const V = (C, x, y, z) => new THREE.Vector3((x - C.W / 2) * K, z * K, -(y - C.H 
 function texOf(canvas) { const t = new THREE.CanvasTexture(canvas); t.colorSpace = THREE.SRGBColorSpace; t.magFilter = THREE.NearestFilter; t.anisotropy = 4; return t; }
 
 function wallMesh(C, M, pts, zmin, zmax, sectionRaster, n, opt = {}) {
-  const R = sectionRaster(pts, 320, 260, zmin, zmax, { pattern: opt.pattern });
+  const RW = 640, RH = 420;
+  const R = sectionRaster(pts, RW, RH, zmin, zmax, { pattern: opt.pattern });
   const P = R.P;
+  if (opt.faults !== false && ctxRef) { // 斷層線：與「地質剖面」相同，取 faultField = 0
+    const cols = 240, rows = 120, g = R.canvas.getContext('2d');
+    const tops = []; for (let i = 0; i < cols; i++) { const [x, y] = P.at(i / (cols - 1) * P.length); tops.push(M.topo(x, y)); }
+    M.evs.forEach((e, fi) => {
+      if (e.type !== 'fault') return;
+      const grid = new Float32Array(cols * rows);
+      for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) { const z = zmax - j / (rows - 1) * (zmax - zmin), [x, y] = P.at(i / (cols - 1) * P.length); grid[j * cols + i] = z > tops[i] + 1 ? NaN : faultField(fi, e, x, y, z); }
+      g.strokeStyle = '#8e1016'; g.lineWidth = 3; g.lineCap = 'round'; g.beginPath();
+      marchingSegments(grid, cols, rows, 0, (a, b, c, d) => { g.moveTo(a / (cols - 1) * RW, b / (rows - 1) * RH); g.lineTo(c / (cols - 1) * RW, d / (rows - 1) * RH); });
+      g.stroke();
+    });
+  }
   const pos = [], uv = [], idx = [];
   for (let i = 0; i <= n; i++) {
     const s = i / n * P.length; const [x, y] = P.at(s); const zt = M.topo(x, y);
@@ -3554,33 +3567,44 @@ function build(ctx) {
       const fence = wallMesh(C, M, st.sec, zmin, zmax, sectionRaster, 200, { pattern: st.show.pattern }); fence.userData.noclip = true;
       root.add(fence);
     }
-    // 斷層面
+    // 斷層面：與「地質剖面」相同，取模型中的斷層場 faultField = 0 的等值面（含後期褶皺、斷層錯動與不整合截切），再以地形裁切
     if (show('g3Fault')) {
-      for (const e of M.evs.filter(q => q.type === 'fault')) {
-        const n = 60, R = Math.max(C.W, C.H) * 1.6, pos = [], idx = [], ok = [];
-        let tr = null;
-        if (e.trace) { // 數化斷層：沿跡線往傾向側延伸
-          const P = polylineSamplerExt(e.trace, R * 0.25);
-          tr = { P, depth: (M.topo.max - zmin) / Math.max(0.2, e.sd) + 200 };
+      const faults = M.evs.map((e, i) => [e, i]).filter(([e]) => e.type === 'fault');
+      if (faults.length) {
+        const nx = 64, ny = Math.max(8, Math.round(64 * (Y1 - Y0) / Math.max(1, X1 - X0))), z1 = M.topo.max + 60;
+        const nz = Math.max(16, Math.min(44, Math.round((z1 - zmin) / ((X1 - X0) / (nx - 1)))));
+        const dx = (X1 - X0) / (nx - 1), dy = (Y1 - Y0) / (ny - 1), dz = (z1 - zmin) / (nz - 1), lim = 1.8 * Math.hypot(dx, dy, dz);
+        const N = nx * ny * nz, F = faults.map(() => new Float32Array(N)), rec = [];
+        for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+          const x = X0 + i * dx, y = Y0 + j * dy, z = zmin + k * dz, q = (k * ny + j) * nx + i;
+          rec.length = 0; const r = ctx.evalAt(M, x, y, z, rec);
+          faults.forEach(([e, fi], n) => { F[n][q] = e.user ? faultField(fi, e, x, y, z) : (r.seq > fi || !rec[fi]) ? NaN : faultVal(e, rec[fi]); });
         }
-        for (let j = 0; j <= n; j++) for (let i = 0; i <= n; i++) {
-          let p;
-          if (tr) {
-            const s = i / n * tr.P.length, tt = -100 + j / n * tr.depth; const [x, y, az] = tr.P.at(s);
-            const r = [Math.cos(az * Math.PI / 180) * e.side, -Math.sin(az * Math.PI / 180) * e.side];
-            const z0 = M.topo(Math.max(0, Math.min(C.W, x)), Math.max(0, Math.min(C.H, y)));
-            p = [x + r[0] * tt * e.cd, y + r[1] * tt * e.cd, z0 - tt * e.sd];
-          } else {
-            const s = (i / n - 0.5) * R, tt = (j / n - 0.5) * R;
-            p = [e.p0[0] + s * e.S[0] + tt * e.dd[0], e.p0[1] + s * e.S[1] + tt * e.dd[1], e.p0[2] + s * e.S[2] + tt * e.dd[2]];
+        const off = [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1]];
+        const tets = [[0, 5, 1, 6], [0, 1, 2, 6], [0, 2, 3, 6], [0, 3, 7, 6], [0, 7, 4, 6], [0, 4, 5, 6]];
+        faults.forEach(([e], n) => {
+          const G = F[n], pos = [], idx = [], vmap = new Map();
+          const gp = q => { const i = q % nx, j = ((q / nx) | 0) % ny, k = (q / (nx * ny)) | 0; return [X0 + i * dx, Y0 + j * dy, zmin + k * dz]; };
+          const vert = (a, b) => { const key = a < b ? a * N + b : b * N + a; let v = vmap.get(key); if (v !== undefined) return v;
+            const va = G[a], vb = G[b], t = va / (va - vb), pa = gp(a), pb = gp(b); const w = V(C, pa[0] + (pb[0] - pa[0]) * t, pa[1] + (pb[1] - pa[1]) * t, pa[2] + (pb[2] - pa[2]) * t);
+            v = pos.length / 3; pos.push(w.x, w.y, w.z); vmap.set(key, v); return v; };
+          for (let k = 0; k < nz - 1; k++) for (let j = 0; j < ny - 1; j++) for (let i = 0; i < nx - 1; i++) {
+            const cq = off.map(o => ((k + o[2]) * ny + (j + o[1])) * nx + (i + o[0]));
+            for (const T of tets) {
+              const q4 = T.map(t => cq[t]), v4 = q4.map(q => G[q]);
+              if (!v4.every(Number.isFinite) || Math.max(...v4.map(Math.abs)) > lim) continue; // 排除其他斷層造成的不連續
+              const pos4 = [0, 1, 2, 3].filter(m => v4[m] > 0), neg4 = [0, 1, 2, 3].filter(m => v4[m] <= 0);
+              if (!pos4.length || !neg4.length) continue;
+              if (pos4.length === 1 || neg4.length === 1) { const [a] = pos4.length === 1 ? pos4 : neg4, o3 = (pos4.length === 1 ? neg4 : pos4); idx.push(vert(q4[a], q4[o3[0]]), vert(q4[a], q4[o3[1]]), vert(q4[a], q4[o3[2]])); }
+              else { const [a, b] = pos4, [c, d] = neg4, ac = vert(q4[a], q4[c]), ad = vert(q4[a], q4[d]), bd = vert(q4[b], q4[d]), bc = vert(q4[b], q4[c]); idx.push(ac, ad, bd, ac, bd, bc); }
+            }
           }
-          const inside = p[0] >= X0 && p[0] <= X1 && p[1] >= Y0 && p[1] <= Y1 && p[2] >= zmin && p[2] <= M.topo(Math.max(0, Math.min(C.W, p[0])), Math.max(0, Math.min(C.H, p[1])));
-          const v = V(C, p[0], p[1], p[2]); pos.push(v.x, v.y, v.z); ok.push(inside);
-        }
-        for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) { const k = j * (n + 1) + i; if (ok[k] && ok[k + 1] && ok[k + n + 1] && ok[k + n + 2]) idx.push(k, k + 1, k + n + 1, k + 1, k + n + 2, k + n + 1); }
-        if (!idx.length) continue;
-        const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
-        root.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: 0xc0262d, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false })));
+          if (!idx.length) return;
+          let g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx); g.computeVertexNormals();
+          g = clipGeometry(g, (px, py, pz) => { const x = px / K + C.W / 2, y = -pz / K + C.H / 2; return M.topo(Math.max(0, Math.min(C.W, x)), Math.max(0, Math.min(C.H, y))) - py / K; }); // 只留地表以下
+          if (!g.attributes.position.count) return;
+          root.add(new THREE.Mesh(g, new THREE.MeshLambertMaterial({ color: 0xc0262d, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false })));
+        });
       }
     }
     // 層面

@@ -30,3 +30,8 @@
 
 Lisle, R. J. (2004). *Geological Structures and Maps: A Practical Guide* (3rd ed.). Elsevier Butterworth-Heinemann.
 本工具的範例模型、圖面與說明文字皆為原創，未收錄上列文獻的圖、表或文字。
+
+## 瀏覽統計
+
+正式網站（yoshihuang.github.io）使用 [GoatCounter](https://www.goatcounter.com/) 統計瀏覽人次與功能使用（剖面、3D、匯入 GPKG、下載範例），不使用 cookie。統計後台：https://geomap-workbench.goatcounter.com
+

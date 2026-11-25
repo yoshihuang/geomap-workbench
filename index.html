@@ -3314,7 +3314,13 @@ window.addEventListener('DOMContentLoaded', initUI);
   };
   if (!live) return;
   const sc = document.createElement('script'); sc.async = true; sc.src = 'https://gc.zgo.at/count.js'; sc.dataset.goatcounter = SITE + '/count'; document.head.appendChild(sc);
-  fetch(SITE + '/counter/TOTAL.json').then(r => r.ok ? r.json() : null).then(j => { if (j && j.count != null) { count = j.count; STATS.render(); } }).catch(() => { });
+  // GoatCounter 的計數器會快取 4 小時；快取鍵包含 start/end，所以每次給一個隨機、早於網站上線的 start 取得即時數字（不影響總數）。
+  // 只算本頁路徑的瀏覽（TOTAL 會把功能使用事件也算進去）。end 要晚於今天，否則不含今天的資料。
+  const d0 = Date.UTC(2000, 0, 1), d1 = Date.UTC(2026, 10, 19), rnd = new Date(d0 + Math.floor(Math.random() * ((d1 - d0) / 864e5)) * 864e5).toISOString().slice(0, 10);
+  const q = `?start=${rnd}&end=2099-12-31`;
+  const get = path => fetch(`${SITE}/counter/${path}.json${q}`, { cache: 'no-store' }).then(r => r.ok ? r.json() : null);
+  get(encodeURIComponent(location.pathname)).then(j => j && j.count != null ? j : get('TOTAL'))
+    .then(j => { if (j && j.count != null) { count = j.count; STATS.render(); } }).catch(() => { });
 })();
 </script>
 <script type="module">
